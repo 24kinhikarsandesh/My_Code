@@ -1,112 +1,97 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
 serve(async (req) => {
-  // Handle CORS preflight requests
-  if (req.method === 'OPTIONS') {
+  // Handle CORS preflight
+  if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
+    // Parse multipart form data
     const formData = await req.formData();
-    const audioFile = formData.get('audio') as File;
+    const audioFile = formData.get("audio");
 
-    if (!audioFile) {
-      throw new Error('No audio file provided');
+    if (!(audioFile instanceof File)) {
+      return new Response(
+        JSON.stringify({ error: "No audio file provided" }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
-    console.log('Received audio file:', audioFile.name, 'Size:', audioFile.size, 'Type:', audioFile.type);
+    console.log(
+      "Received audio:",
+      audioFile.name,
+      audioFile.type,
+      audioFile.size
+    );
 
-    const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
+    // Load API key
+    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
-      throw new Error('LOVABLE_API_KEY is not configured');
+      throw new Error("LOVABLE_API_KEY is not configured");
     }
 
-    // Convert audio to base64 for the API
-    const audioBuffer = await audioFile.arrayBuffer();
-    const audioBase64 = btoa(String.fromCharCode(...new Uint8Array(audioBuffer)));
+    // Prepare multipart request for transcription
+    const fd = new FormData();
+    fd.append("file", audioFile);       // raw File (IMPORTANT)
+    fd.append("model", "whisper-1");    // correct transcription model
 
-    // Use Lovable AI Gateway with Gemini for audio transcription
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: `You are a professional transcription service. Transcribe the following audio recording accurately. 
-                
-This is a phone call recording that may contain a conversation between a caller and a victim.
-
-Format the transcript with timestamps if you can detect them, like:
-[0:00] Speaker: "dialogue here"
-
-If you cannot detect distinct timestamps, format it as:
-Caller: "dialogue"
-Victim: "dialogue"
-
-Only output the transcript, nothing else. Do not add any commentary or analysis.`
-              },
-              {
-                type: 'input_audio',
-                input_audio: {
-                  data: audioBase64,
-                  format: 'wav'
-                }
-              }
-            ]
-          }
-        ],
-      }),
-    });
+    // Call AI transcription endpoint
+    const response = await fetch(
+      "https://ai.gateway.lovable.dev/v1/audio/transcriptions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${LOVABLE_API_KEY}`,
+        },
+        body: fd,
+      }
+    );
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('AI Gateway error:', response.status, errorText);
-      
-      if (response.status === 429) {
-        return new Response(JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }), {
-          status: 429,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-      if (response.status === 402) {
-        return new Response(JSON.stringify({ error: 'Payment required. Please add credits.' }), {
-          status: 402,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-      
-      throw new Error(`Transcription failed: ${errorText}`);
+      console.error("Transcription failed:", errorText);
+
+      return new Response(
+        JSON.stringify({ error: errorText }),
+        {
+          status: response.status,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     const data = await response.json();
-    const transcript = data.choices?.[0]?.message?.content || '';
+    const transcript = data.text || "";
 
-    console.log('Transcription completed, length:', transcript.length);
+    console.log("Transcription successful");
 
-    return new Response(JSON.stringify({ transcript }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    return new Response(
+      JSON.stringify({ transcript }),
+      {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
 
   } catch (error) {
-    console.error('Transcription error:', error);
-    return new Response(JSON.stringify({ 
-      error: error instanceof Error ? error.message : 'Failed to transcribe audio' 
-    }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    console.error("Server error:", error);
+
+    return new Response(
+      JSON.stringify({
+        error: error instanceof Error ? error.message : "Unknown error",
+      }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
   }
 });
